@@ -1,7 +1,9 @@
-use leptos::task::spawn_local;
-use leptos::{ev::SubmitEvent, prelude::*};
+use leptos::{ev::SubmitEvent, prelude::*, task::spawn_local, *};
 use serde::{Deserialize, Serialize};
+use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::prelude::*;
+
+use crate::models::{HttpRequest, HttpResponse};
 
 #[wasm_bindgen]
 extern "C" {
@@ -16,12 +18,27 @@ struct GreetArgs<'a> {
 
 #[component]
 pub fn App() -> impl IntoView {
+    let (url, set_url) = signal(String::new());
+    let (method, set_method) = signal("GET".to_string());
+    let (body, set_body) = signal(String::new());
+    let (response, set_response) = signal::<Option<HttpResponse>>(None);
     let (name, set_name) = signal(String::new());
     let (greet_msg, set_greet_msg) = signal(String::new());
 
-    let update_name = move |ev| {
-        let v = event_target_value(&ev);
-        set_name.set(v);
+    let send_click = move |_| {
+        let req = HttpRequest {
+            url: url.get().to_string(),
+            method: method.get().to_string(),
+            headers: vec![],
+            body: Some(body.get().to_string()),
+        };
+
+        spawn_local(async move {
+            let res = invoke_tauri("send_request", req).await;
+            if let Ok(resp) = res {
+                set_response.set(Some(resp));
+            }
+        });
     };
 
     let greet = move |ev: SubmitEvent| {
@@ -41,27 +58,53 @@ pub fn App() -> impl IntoView {
 
     view! {
         <main class="container">
-            <h1>"Welcome to Tauri + Leptos"</h1>
+            <div>
+                <select
+                    class="border p-2 mt-2"
+                    on:input=move |ev| set_method.set(event_target_value(&ev))
+                >
+                    <option value="GET">"GET"</option>
+                    <option value="POST">"POST"</option>
+                    <option value="PUT">"PUT"</option>
+                    <option value="DELETE">"DELETE"</option>
+                </select>
 
-            <div class="row">
-                <a href="https://tauri.app" target="_blank">
-                    <img src="public/tauri.svg" class="logo tauri" alt="Tauri logo"/>
-                </a>
-                <a href="https://docs.rs/leptos/" target="_blank">
-                    <img src="public/leptos.svg" class="logo leptos" alt="Leptos logo"/>
-                </a>
-            </div>
-            <p>"Click on the Tauri and Leptos logos to learn more."</p>
-
-            <form class="row" on:submit=greet>
                 <input
-                    id="greet-input"
-                    placeholder="Enter a name..."
-                    on:input=update_name
+                    class="border p-2 w-full"
+                    placeholder="Enter URL"
+                    on:input=move |ev| set_url.set(event_target_value(&ev))
                 />
-                <button type="submit">"Greet"</button>
-            </form>
-            <p>{ move || greet_msg.get() }</p>
+                <button
+                    class="bg-blue-500 text-white px-4 py-2 mt-2"
+                    on:click=send_click
+                >
+                    "Send"
+                </button>
+                {move || response.get().map(|resp| view!{ cx,
+                    <div class="mt-4 border p-2">
+                        <div>"Status: " {resp.status}</div>
+                        <div class="mt-2 font-bold">"Headers:"</div>
+                        <ul>
+                            {resp.headers.into_iter().map(|(k,v)| view!{ cx,
+                                <li>{k}": "{v}</li>
+                            }).collect_view()}
+                        </ul>
+                        <div class="mt-2 font-bold">"Body:"</div>
+                        <pre class="whitespace-pre-wrap">{resp.body}</pre>
+                    </div>
+                })}
+            </div>
+            <textarea
+                class="border p-2 w-full mt-2 h-32"
+                placeholder="Request body (JSON)"
+                on:input=move |ev| set_body.set(event_target_value(&ev))
+            ></textarea>
         </main>
     }
+}
+
+async fn invoke_tauri(cmd: &str, payload: HttpRequest) -> Result<HttpResponse, String> {
+    let val = to_value(&payload).unwrap();
+    let js_val = invoke(cmd, val).await;
+    from_value(js_val).map_err(|e| e.to_string())
 }
